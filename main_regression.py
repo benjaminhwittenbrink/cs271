@@ -1,6 +1,7 @@
 # standard libraries 
 
 import argparse 
+import os 
 import random 
 import pandas as pd
 import numpy as np 
@@ -11,7 +12,7 @@ from datetime import datetime
 # PyTorch libraries 
 import torch 
 import torch.nn as nn 
-from torch.utils.data import DataLoader 
+from torch.utils.data import DataLoader, Dataset
 from torchvision.datasets import DatasetFolder
 from torchvision import models, transforms 
 
@@ -124,6 +125,28 @@ def create_model_and_collator(args, model_name):
 
     return collators, model 
 
+class RegressionImageDataset(Dataset):
+
+    def __init__(self, root, loader):
+
+        self.root = root 
+        self.image_paths = os.listdir(root)
+        self.loader = loader
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+
+        image_filepath = self.root + "/" + self.image_paths[idx]
+        img = self.loader(image_filepath)
+
+        label_string = self.image_paths[idx].split("_")[1].split(".")[0]
+        label_string = label_string.replace("dot", ".")
+        label = float(label_string)
+
+        return img, label
+
 
 def create_dataset(args, collator_fns, extensions = ['.npy'], val_split = 0.15):
 
@@ -132,10 +155,9 @@ def create_dataset(args, collator_fns, extensions = ['.npy'], val_split = 0.15):
         return sample 
     
     # load in dataset frmom directory 
-    dataset = DatasetFolder(
+    dataset = RegressionImageDataset(
         root = args.data_dir, 
-        loader = npy_loader, 
-        extensions = extensions
+        loader = npy_loader
     )
     # split up into train val data  
     indices = torch.randperm(len(dataset)).tolist()
@@ -148,29 +170,14 @@ def create_dataset(args, collator_fns, extensions = ['.npy'], val_split = 0.15):
 
     return [train_dl, val_dl]
 
-def dataset_statistics(args, dataset_loader):
-    label_stats = collections.Counter()
-    for i, batch in enumerate(dataset_loader):
-        inputs, labels = batch['pixel_values'], batch['labels']
-        labels = labels.cpu().numpy().flatten()
-        label_stats += collections.Counter(labels)
-    return label_stats
-
-
-def measure_accuracy(outputs, labels):
-    preds = np.argmax(outputs, axis = 1).flatten()
-    labels = labels.flatten()
-    correct = np.sum(preds == labels)
-    c_matrix = confusion_matrix(labels, preds, labels=CLASS_NAMES)
-    return correct, len(labels), c_matrix 
 
 def validation(args, val_loader, model, criterion, device, name = 'Validation', write_file=None):
 
     model.eval()
     total_loss = 0. 
-    total_correct = 0 
-    total_sample = 0 
-    total_confusion = np.zeros((CLASSES, CLASSES))
+    # total_correct = 0 
+    # total_sample = 0 
+    # total_confusion = np.zeros((CLASSES, CLASSES))
 
     for i, batch in enumerate(tqdm(val_loader)):
         inputs, labels = batch['pixel_values'], batch['labels'] 
@@ -186,23 +193,22 @@ def validation(args, val_loader, model, criterion, device, name = 'Validation', 
             else: 
                 outputs = model(inputs)['logits'] 
 
+        labels = labels.float()
+        labels = torch.unsqueeze(labels, 1)
+        
         loss = criterion(outputs, labels)
 
         logits = outputs 
         total_loss += loss.cpu().item()
 
-        correct_n, sample_n, c_matrix = measure_accuracy(logits.cpu().numpy(), labels.cpu().numpy())
-        total_correct += correct_n 
-        total_sample += sample_n 
-        total_confusion += c_matrix 
 
-    print(f'*** Accuracy on the {name} set: {total_correct/total_sample}')
-    print(f'*** Confusion matrix:\n{total_confusion}')
-    if write_file:
-        write_file.write(f'*** Accuracy on the {name} set: {total_correct/total_sample}\n')
-        write_file.write(f'*** Confusion matrix:\n{total_confusion}\n')
+    print(f'*** Average batch loss on the {name} set: {total_loss / i})')
+    cor = np.corrcoef(logits.cpu().numpy().squeeze(), labels.cpu().numpy().squeeze())
+    print(f'*** Correlation between predictions and labels: {np.round(cor[0, 1], 2)}')
+    print(f'*** Last five preds: {logits.cpu().numpy()[-5:]}')
+    print(f'*** Last five labels: {labels.cpu().numpy()[-5:]}')
 
-    return total_loss, float(total_correct / total_sample) * 100
+    return  total_loss
 
 
 
@@ -214,12 +220,10 @@ def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, devic
 
     model.train()
 
-    best_val_acc = 0
+    best_val_loss = 0
     for epoch in range(epoch_n):
         print("*** Epoch:", epoch)
         total_train_loss = 0. 
-        total_correct = 0
-        total_sample = 0
 
         for i, batch in enumerate(tqdm(data_loaders[0])): 
             optim.zero_grad()
@@ -236,11 +240,11 @@ def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, devic
             else: 
                 outputs = model(inputs)['logits']
 
+            labels = labels.float()
+            labels = torch.unsqueeze(labels, 1)
+            
             loss = criterion(outputs, labels)
             logits = outputs
-            correct_n, sample_n, c_matrix = measure_accuracy(logits.cpu().detach().numpy(), labels.cpu().detach().numpy())
-            total_correct += correct_n 
-            total_sample += sample_n 
 
             total_train_loss += loss.cpu().item()
 
@@ -252,18 +256,16 @@ def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, devic
 
             if i % args.val_every == 0: 
                 print(f'*** Average Loss: {total_train_loss / (i+1)}')
-                print(f'*** Running accuracy on the train set: {total_correct/total_sample}')
                 if write_file:
                     write_file.write(f'\nEpoch: {epoch}, Step: {i}\n')
-                    write_file.write(f'*** Loss: {loss}\n')
-                    write_file.write(f'*** Running accuracy on the train set: {total_correct/total_sample}\n')
+                    write_file.write(f'*** Average Loss: {total_train_loss / (i+1)}')
 
-                _, val_acc = validation(args, data_loaders[1], model, criterion, device, write_file=write_file)
+                val_loss = validation(args, data_loaders[1], model, criterion, device, write_file=write_file)
 
                 model.train()
 
-                if best_val_acc < val_acc: 
-                    best_val_acc = val_acc 
+                if best_val_loss < val_loss: 
+                    best_val_loss = val_loss 
 
                     if args.save_path:
                         if args.model_name in ['ViT']:
@@ -284,10 +286,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--data_dir', type=str, default = 'Mean_BMI_bin', help='Image data location.')
-    parser.add_argument('--csv_file', type=str, help='CSV file with labels.')
-    parser.add_argument('--outcome', type=str, help='Label of outcome variable in df.')
 
-    parser.add_argument('--n_classes', default=3, type=int, help='Number of classes in outcome variable.')	
+    #parser.add_argument('--n_classes', default=3, type=int, help='Number of classes in outcome variable.')	
     parser.add_argument('--batch_size', default=16, type=int, help='Batch size.')
     parser.add_argument('--epoch_n', default=10, type=int, help='Number of epochs for training.')
     parser.add_argument('--val_every', default=200, type=int, help="Number of iterations we should take to perform validation.")
@@ -299,20 +299,15 @@ if __name__ == '__main__':
     parser.add_argument('--model_name', default=None, type=str, help='Name of model.')
     parser.add_argument('--save_path', default=None, type=str, help='The path where the model is going to be saved.')
 
-    # parser.add_argument('--n_filters', type=int, default=25, help='Number of filters in the CNN (if applicable)')
-    # parser.add_argument('--filter_sizes', type=int, nargs='+', action='append', default=[[3,4,5], [5,6,7], [7,9,11]], help='Filter sizes for the CNN (if applicable).')
-
 
     args = parser.parse_args()
 
     # Number of classes 
-    CLASSES = args.n_classes
+    CLASSES = 1
     CLASS_NAMES = [i for i in range(CLASSES)]
 
     epoch_n = args.epoch_n
-
     filename = args.filename 
-
 
     if filename is None: 
         filename = f'./results/{args.model_name}/{datetime.now()}.txt'
@@ -334,15 +329,6 @@ if __name__ == '__main__':
         args = args, collator_fns = collators
     )
 
-    # train_label_stats = dataset_statistics(args, data_loaders[0])
-    # val_label_stats = dataset_statistics(args, data_loaders[1])
-    # print(f'*** Training set label statistics: {train_label_stats}')
-    # print(f'*** Validation set label statistics: {val_label_stats}')
-
-    # if write_file:
-    #     write_file.write(f'*** Training set label statistics: {train_label_stats}')
-    #     write_file.write(f'*** Validation set label statistics: {val_label_stats}')	
-
 
     if args.model_name in ['logistic_regression', 'basic_cnn', 'dense_cnn']:
         optim = torch.optim.Adam(params = model.parameters())
@@ -352,11 +338,7 @@ if __name__ == '__main__':
     total_steps = len(data_loaders[0]) * args.epoch_n 
     scheduler = get_linear_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps = total_steps)
 
-    # get class weights 
-    df = pd.read_csv(args.csv_file + ".csv")
-    class_weights = 1 - df[args.outcome].value_counts(normalize=True).sort_index()
-    class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
-    criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
+    criterion = torch.nn.MSELoss()
 
     if write_file: 
         write_file.write(f'\nModel:\n {model}\nOptimizer:{optim}\n')
