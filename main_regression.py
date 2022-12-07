@@ -29,6 +29,7 @@ from transformers import get_linear_schedule_with_warmup
 
 # simple models
 from models import LogisticRegression, BasicCNNModel, DenseCNNModel
+from SatelliteImageDataset import SatelliteImageDataset
 
 from sklearn.metrics import confusion_matrix
 

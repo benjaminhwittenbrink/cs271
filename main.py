@@ -28,6 +28,7 @@ from transformers import get_linear_schedule_with_warmup
 
 # simple models
 from models import LogisticRegression, BasicCNNModel, DenseCNNModel
+from SatelliteImageDataset import SatelliteImageDataset
 
 from sklearn.metrics import confusion_matrix
 
@@ -132,11 +133,13 @@ def create_dataset(args, collator_fns, extensions = ['.npy'], val_split = 0.15):
         return sample 
     
     # load in dataset frmom directory 
-    dataset = DatasetFolder(
+    dataset = SatelliteImageDataset(
         root = args.data_dir, 
-        loader = npy_loader, 
-        extensions = extensions
+        csv_path = args.csv_file, 
+        outcome = args.outcome, 
+        loader = npy_loader
     )
+
     # split up into train val data  
     indices = torch.randperm(len(dataset)).tolist()
     n_val = int(np.floor(len(indices) * val_split))
@@ -283,11 +286,13 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--data_dir', type=str, default = 'Mean_BMI_bin', help='Image data location.')
+    # example args would be 
+    # main.py --data_dir west_africa_npy --csv_file west_africa_df --outcome Mean_BMI_bin  --n_classes 3
+    parser.add_argument('--data_dir', type=str, help='Image data location.')
     parser.add_argument('--csv_file', type=str, help='CSV file with labels.')
     parser.add_argument('--outcome', type=str, help='Label of outcome variable in df.')
+    parser.add_argument('--n_classes', type=int, help='Number of classes in outcome variable.')	
 
-    parser.add_argument('--n_classes', default=3, type=int, help='Number of classes in outcome variable.')	
     parser.add_argument('--batch_size', default=16, type=int, help='Batch size.')
     parser.add_argument('--epoch_n', default=10, type=int, help='Number of epochs for training.')
     parser.add_argument('--val_every', default=200, type=int, help="Number of iterations we should take to perform validation.")
