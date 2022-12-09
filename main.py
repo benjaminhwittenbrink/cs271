@@ -27,8 +27,8 @@ from transformers import get_linear_schedule_with_warmup
 # from sklearn.neighbors import KNeighborsClassifier
 
 # simple models
-from models import LogisticRegression, BasicCNNModel, DenseCNNModel
-from SatelliteImageDataset import SatelliteImageDataset
+from models import LogisticRegression, BasicCNNModel, DenseCNNModel, BasicCNNCountryModel
+from SatelliteImageDataset import SatelliteImageDataset, SatelliteImageMetadataDataset
 
 from sklearn.metrics import confusion_matrix
 
@@ -40,9 +40,10 @@ random.seed(RANDOM_SEED)
 
 
 class ImageClassificationCollator:
-    def __init__(self, feature_extractor, transforms = False): 
+    def __init__(self, feature_extractor, transforms = False, metadata = False): 
         self.feature_extractor = feature_extractor
         self.transforms = transforms 
+        self.metadata = metadata
 
     def __call__(self, batch):
         if self.transforms: 
@@ -51,10 +52,16 @@ class ImageClassificationCollator:
         else: 
             encodings = self.feature_extractor([x[0] for x in batch], return_tensors='pt')   
         encodings['labels'] = torch.tensor([x[1] for x in batch],  dtype=torch.long)
+        
+        if self.metadata: 
+            if "country" in self.metadata:
+                encodings['country'] = torch.tensor([x[2] for x in batch])
+            # if "year" in self.metadata: 
+            #     encodings['year'] = torch.tensor([x[2]['year'] for x in batch])
         return encodings
 
 # create model and collator
-def create_model_and_collator(args, model_name):
+def create_model_and_collator(args, model_name, metadata = None, cnt_id_map = None):
 
     if model_name == "ViT":
         feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
@@ -106,11 +113,18 @@ def create_model_and_collator(args, model_name):
             model = models.densenet121(pretrained=True)
             model.classifier = nn.Linear(model.classifier.in_features, CLASSES) 
 
+    elif model_name in ['basic_cnn'] and metadata:
+        feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
+        collator = ImageClassificationCollator(feature_extractor, metadata=metadata)
+        collators = (collator, collator)
+        model = BasicCNNCountryModel(n_classes=CLASSES, cnt_id_map = cnt_id_map, num_country_embeddings=len(cnt_id_map))
+
     elif model_name in ['basic_cnn', 'dense_cnn', 'logistic_regression']:
         # ADD IN transforms though feature extractor might be easier 
         feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
         collator = ImageClassificationCollator(feature_extractor)
         collators = (collator, collator)
+        # TODO: add support for model!
         if model_name == "logistic_regression":
             model = LogisticRegression(n_classes=CLASSES)
         elif model_name == "basic_cnn":
@@ -126,19 +140,27 @@ def create_model_and_collator(args, model_name):
     return collators, model 
 
 
-def create_dataset(args, collator_fns, extensions = ['.npy'], val_split = 0.15):
+def create_dataset(args, collator_fns, metadata = None, cnt_id_map = None, val_split = 0.15):
 
     def npy_loader(path):
         sample = torch.from_numpy(np.load(path))
         return sample 
     
     # load in dataset frmom directory 
-    dataset = SatelliteImageDataset(
-        root = args.data_dir, 
-        csv_path = args.csv_file, 
-        outcome = args.outcome, 
-        loader = npy_loader
-    )
+    if metadata:
+        dataset = SatelliteImageMetadataDataset(
+            root = args.data_dir, 
+            csv_path = args.csv_file, 
+            outcome = args.outcome, 
+            loader = npy_loader
+        )
+    else:
+        dataset = SatelliteImageDataset(
+            root = args.data_dir, 
+            csv_path = args.csv_file, 
+            outcome = args.outcome, 
+            loader = npy_loader
+        )
 
     # split up into train val data  
     indices = torch.randperm(len(dataset)).tolist()
@@ -167,7 +189,7 @@ def measure_accuracy(outputs, labels):
     c_matrix = confusion_matrix(labels, preds, labels=CLASS_NAMES)
     return correct, len(labels), c_matrix 
 
-def validation(args, val_loader, model, criterion, device, name = 'Validation', write_file=None):
+def validation(args, val_loader, model, criterion, metadata, device, name = 'Validation', write_file=None):
 
     model.eval()
     total_loss = 0. 
@@ -181,7 +203,10 @@ def validation(args, val_loader, model, criterion, device, name = 'Validation', 
         labels = labels.to(device)
 
         with torch.no_grad():
-            if args.model_name in [
+            if args.model_name in ['basic_cnn'] and metadata:
+                country = batch['country'].to(device)
+                outputs = model(inputs, country)
+            elif args.model_name in [
             'basic_cnn', 'dense_cnn', 'logistic_regression',
             'resnet', 'alexnet', 'vgg', 'squeezenet', 'densenet'
             ]:
@@ -209,7 +234,7 @@ def validation(args, val_loader, model, criterion, device, name = 'Validation', 
 
 
 
-def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, device, write_file=None):
+def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, metadata, device, write_file=None):
     print("\n>>> Training starts...")
 
     if write_file: 
@@ -231,7 +256,10 @@ def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, devic
             labels = labels.to(device, non_blocking=True)
 
             # forward pass 
-            if args.model_name in [
+            if args.model_name in ['basic_cnn'] and metadata:
+                country = batch['country'].to(device)
+                outputs = model(inputs, country)
+            elif args.model_name in [
                 'basic_cnn', 'dense_cnn', 'logistic_regression', 
                 'resnet', 'alexnet', 'vgg', 'squeezenet', 'densenet'
             ]:
@@ -261,7 +289,7 @@ def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, devic
                     write_file.write(f'*** Loss: {loss}\n')
                     write_file.write(f'*** Running accuracy on the train set: {total_correct/total_sample}\n')
 
-                _, val_acc = validation(args, data_loaders[1], model, criterion, device, write_file=write_file)
+                _, val_acc = validation(args, data_loaders[1], model, criterion, metadata, device, write_file=write_file)
 
                 model.train()
 
@@ -302,6 +330,7 @@ if __name__ == '__main__':
     parser.add_argument('--filename', default=None, type=str, help='Name of results file to be saved.')
 
     parser.add_argument('--model_name', default=None, type=str, help='Name of model.')
+    parser.add_argument('--metadata', action='store_true', help="Whether to include metadata.")
     parser.add_argument('--save_path', default=None, type=str, help='The path where the model is going to be saved.')
 
     # parser.add_argument('--n_filters', type=int, default=25, help='Number of filters in the CNN (if applicable)')
@@ -313,11 +342,19 @@ if __name__ == '__main__':
     # Number of classes 
     CLASSES = args.n_classes
     CLASS_NAMES = [i for i in range(CLASSES)]
-
+    
     epoch_n = args.epoch_n
-
     filename = args.filename 
 
+    # read df 
+    df = pd.read_csv(args.csv_file + ".csv")
+
+    cnt_id_map = None
+    if args.metadata: 
+        metadata = ["country"]
+        unique_countries = list(set(df["country"]))
+        unique_countries_int = [int(str(ord(c[0])) + str(ord(c[1]))) for c in unique_countries]
+        cnt_id_map = {float(v):k for k, v in enumerate(set(unique_countries_int))}
 
     if filename is None: 
         filename = f'./results/{args.model_name}/{datetime.now()}.txt'
@@ -330,13 +367,15 @@ if __name__ == '__main__':
     # create model 
     collators, model = create_model_and_collator(
         args = args, 
-        model_name = args.model_name
+        model_name = args.model_name, 
+        metadata=metadata, cnt_id_map = cnt_id_map
+
     )
     model.to(device)
 
     # load data 
     data_loaders = create_dataset(
-        args = args, collator_fns = collators
+        args = args, collator_fns = collators, metadata = metadata, cnt_id_map = cnt_id_map
     )
 
     # train_label_stats = dataset_statistics(args, data_loaders[0])
@@ -358,7 +397,6 @@ if __name__ == '__main__':
     scheduler = get_linear_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps = total_steps)
 
     # get class weights 
-    df = pd.read_csv(args.csv_file + ".csv")
     class_weights = 1 - df[args.outcome].value_counts(normalize=True).sort_index()
     class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
@@ -366,7 +404,7 @@ if __name__ == '__main__':
     if write_file: 
         write_file.write(f'\nModel:\n {model}\nOptimizer:{optim}\n')
 
-    train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, device, write_file)
+    train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, metadata, device, write_file)
 
     if write_file:
         write_file.close()
