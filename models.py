@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
-from transformers import ViTForImageClassification
+from transformers import ViTForImageClassification, ViTModel, ViTConfig
 
 #from DenseNet import DenseNet 
 
@@ -164,6 +164,38 @@ class BasicCNNCountryModel (nn.Module):
 	def forward(self, X, country_id):
 		device = 'cuda' if torch.cuda.is_available() else 'cpu'
 		model_out = self.model(X)
+		country_embedding = self.country_embedding(torch.tensor([self.cnt_id_map[_id.item()] for _id in country_id]).to(device))
+		concat_output = torch.cat((model_out, country_embedding), dim=1)
+		logits = self.mlp(concat_output)
+
+		return logits
+
+class ViTCountryModel(nn.Module):
+
+	def __init__(self, n_classes, cnt_id_map = None, num_country_embeddings = 10, metadata_dim = 64, mlp_dim = 128):
+		
+		super().__init__()
+
+		self.n_classes = n_classes
+		self.country_embedding = nn.Embedding(num_country_embeddings, metadata_dim)
+		self.cnt_id_map = cnt_id_map
+		# applies pooling layer 
+		configuration = ViTConfig()
+		self.model = ViTModel(configuration).from_pretrained('google/vit-base-patch16-224-in21k')
+		
+		hidden_dim = 768
+		self.mlp = nn.Sequential(
+            nn.Linear(hidden_dim + metadata_dim, mlp_dim),
+            nn.ReLU(),
+            nn.Linear(mlp_dim, mlp_dim),
+            nn.ReLU(),            
+            nn.Linear(mlp_dim, self.n_classes)
+        )
+	
+	def forward(self, X, country_id):
+		device = 'cuda' if torch.cuda.is_available() else 'cpu'
+		model_out = self.model(X)['pooler_output']
+        
 		country_embedding = self.country_embedding(torch.tensor([self.cnt_id_map[_id.item()] for _id in country_id]).to(device))
 		concat_output = torch.cat((model_out, country_embedding), dim=1)
 		logits = self.mlp(concat_output)

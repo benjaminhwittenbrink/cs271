@@ -27,7 +27,7 @@ from transformers import get_linear_schedule_with_warmup
 # from sklearn.neighbors import KNeighborsClassifier
 
 # simple models
-from models import LogisticRegression, BasicCNNModel, DenseCNNModel, BasicCNNCountryModel
+from models import LogisticRegression, BasicCNNModel, DenseCNNModel, BasicCNNCountryModel, ViTCountryModel
 from SatelliteImageDataset import SatelliteImageDataset, SatelliteImageMetadataDataset
 
 from sklearn.metrics import confusion_matrix
@@ -63,7 +63,16 @@ class ImageClassificationCollator:
 # create model and collator
 def create_model_and_collator(args, model_name, metadata = None, cnt_id_map = None):
 
-    if model_name == "ViT":
+    if metadata:
+        feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
+        collator = ImageClassificationCollator(feature_extractor, metadata=metadata)
+        collators = (collator, collator)
+        if model_name in ['basic_cnn']:
+            model = BasicCNNCountryModel(n_classes=CLASSES, cnt_id_map = cnt_id_map, num_country_embeddings=len(cnt_id_map))
+        elif model_name == "ViT":
+            model = ViTCountryModel(n_classes=CLASSES, cnt_id_map = cnt_id_map, num_country_embeddings=len(cnt_id_map))
+    
+    elif model_name == "ViT":
         feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
         collator = ImageClassificationCollator(feature_extractor)
         collators = (collator, collator)
@@ -112,12 +121,6 @@ def create_model_and_collator(args, model_name, metadata = None, cnt_id_map = No
             # dense net 
             model = models.densenet121(pretrained=True)
             model.classifier = nn.Linear(model.classifier.in_features, CLASSES) 
-
-    elif model_name in ['basic_cnn'] and metadata:
-        feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
-        collator = ImageClassificationCollator(feature_extractor, metadata=metadata)
-        collators = (collator, collator)
-        model = BasicCNNCountryModel(n_classes=CLASSES, cnt_id_map = cnt_id_map, num_country_embeddings=len(cnt_id_map))
 
     elif model_name in ['basic_cnn', 'dense_cnn', 'logistic_regression']:
         # ADD IN transforms though feature extractor might be easier 
@@ -203,9 +206,12 @@ def validation(args, val_loader, model, criterion, metadata, device, name = 'Val
         labels = labels.to(device)
 
         with torch.no_grad():
-            if args.model_name in ['basic_cnn'] and metadata:
+            if metadata: 
                 country = batch['country'].to(device)
-                outputs = model(inputs, country)
+                if args.model_name in ['basic_cnn']:
+                    outputs = model(inputs, country)
+                elif args.model_name == "ViT":
+                    outputs = model(inputs, country)
             elif args.model_name in [
             'basic_cnn', 'dense_cnn', 'logistic_regression',
             'resnet', 'alexnet', 'vgg', 'squeezenet', 'densenet'
@@ -256,9 +262,12 @@ def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, metad
             labels = labels.to(device, non_blocking=True)
 
             # forward pass 
-            if args.model_name in ['basic_cnn'] and metadata:
+            if metadata: 
                 country = batch['country'].to(device)
-                outputs = model(inputs, country)
+                if args.model_name in ['basic_cnn']:
+                    outputs = model(inputs, country)
+                elif args.model_name == "ViT":
+                    outputs = model(inputs, country)
             elif args.model_name in [
                 'basic_cnn', 'dense_cnn', 'logistic_regression', 
                 'resnet', 'alexnet', 'vgg', 'squeezenet', 'densenet'
