@@ -25,10 +25,7 @@ def calc_weighted_accs(fold, results_file, verbose = False):
             correct_preds = np.diag(cm)
             acc = correct_preds / ns
 
-            ws = 1 - (ns / ns.sum())
-            ws = ws / ws.sum()
-
-            weighted_acc = acc.dot(ws)
+            weighted_acc = np.mean(acc)
             weighted_accs.append(weighted_acc)
 
             if verbose: print(f"*** Accuracy on the Validation set: {weighted_acc}")
@@ -43,12 +40,13 @@ def calc_weighted_accs(fold, results_file, verbose = False):
 if __name__ == "__main__":
 
     N_CLASSES = 3
+    FOLDER = "results/results_infant/"
 
-    res_folders = os.listdir("results/results_infant/")
+    res_folders = os.listdir(FOLDER)
     res_folders = sorted(res_folders)
 
     for fold in res_folders:
-        folder_path = "results/results_infant/" + fold + "/"
+        folder_path = FOLDER + fold + "/"
         results = os.listdir(folder_path)
 
 
