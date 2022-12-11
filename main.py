@@ -122,15 +122,35 @@ def create_model_and_collator(args, model_name, metadata = None, cnt_id_map = No
             model = models.densenet121(pretrained=True)
             model.classifier = nn.Linear(model.classifier.in_features, CLASSES) 
 
-    elif model_name in ['basic_cnn', 'dense_cnn', 'logistic_regression']:
+    elif model_name in ['basic_cnn', 'basic_cnn_novit', 'dense_cnn', 'logistic_regression']:
         # ADD IN transforms though feature extractor might be easier 
-        feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
-        collator = ImageClassificationCollator(feature_extractor)
-        collators = (collator, collator)
+        if "novit" in model_name:
+            train_data_transforms = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.RandomResizedCrop(224), # i.e. want 224 by 224 
+                transforms.RandomHorizontalFlip(),  
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+            val_data_transforms = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.Resize(224), # i.e. want 224 by 224 
+                transforms.CenterCrop(224), 
+                transforms.ToTensor(), 
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+            train_collator = ImageClassificationCollator(train_data_transforms, transforms=True)
+            val_collator = ImageClassificationCollator(val_data_transforms, transforms=True)
+
+            collators = (train_collator, val_collator)
+        else: 
+            feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
+            collator = ImageClassificationCollator(feature_extractor)
+            collators = (collator, collator)
         # TODO: add support for model!
         if model_name == "logistic_regression":
             model = LogisticRegression(n_classes=CLASSES)
-        elif model_name == "basic_cnn":
+        elif "basic_cnn" in model_name:
             model = BasicCNNModel(n_classes=CLASSES)
         elif model_name == "dense_cnn":
             model = DenseCNNModel(n_classes=CLASSES)
@@ -164,6 +184,8 @@ def create_dataset(args, collator_fns, metadata = None, cnt_id_map = None, val_s
             outcome = args.outcome, 
             loader = npy_loader
         )
+
+    # IDEALLY we would like same sampling...
 
     # split up into train val data  
     indices = torch.randperm(len(dataset)).tolist()
@@ -213,7 +235,7 @@ def validation(args, val_loader, model, criterion, metadata, device, name = 'Val
                 elif args.model_name == "ViT":
                     outputs = model(inputs, country)
             elif args.model_name in [
-            'basic_cnn', 'dense_cnn', 'logistic_regression',
+            'basic_cnn', 'basic_cnn_novit', 'dense_cnn', 'logistic_regression',
             'resnet', 'alexnet', 'vgg', 'squeezenet', 'densenet'
             ]:
                 outputs = model(inputs)
@@ -231,9 +253,11 @@ def validation(args, val_loader, model, criterion, metadata, device, name = 'Val
         total_confusion += c_matrix 
 
     print(f'*** Accuracy on the {name} set: {total_correct/total_sample}')
+    print(f'*** Weighted accuracy on the {name} set: {np.mean( np.diag(total_confusion) / np.sum(total_confusion, 1) )}')
     print(f'*** Confusion matrix:\n{total_confusion}')
     if write_file:
         write_file.write(f'*** Accuracy on the {name} set: {total_correct/total_sample}\n')
+        write_file.write(f'*** Weighted accuracy on the {name} set: {np.mean( np.diag(total_confusion) / np.sum(total_confusion, 1) )}')
         write_file.write(f'*** Confusion matrix:\n{total_confusion}\n')
 
     return total_loss, float(total_correct / total_sample) * 100
@@ -269,7 +293,7 @@ def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, metad
                 elif args.model_name == "ViT":
                     outputs = model(inputs, country)
             elif args.model_name in [
-                'basic_cnn', 'dense_cnn', 'logistic_regression', 
+                'basic_cnn', 'basic_cnn_novit', 'dense_cnn', 'logistic_regression', 
                 'resnet', 'alexnet', 'vgg', 'squeezenet', 'densenet'
             ]:
                 outputs = model(inputs)
@@ -359,6 +383,7 @@ if __name__ == '__main__':
     df = pd.read_csv(args.csv_file + ".csv")
 
     cnt_id_map = None
+    metadata = None
     if args.metadata: 
         metadata = ["country"]
         unique_countries = list(set(df["country"]))
