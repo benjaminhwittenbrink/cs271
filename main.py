@@ -1,5 +1,5 @@
 # standard libraries 
-
+import os 
 import argparse 
 import random 
 import pandas as pd
@@ -12,14 +12,14 @@ from datetime import datetime
 import torch 
 import torch.nn as nn 
 from torch.utils.data import DataLoader 
-from torchvision.datasets import DatasetFolder
+# from torchvision.datasets import DatasetFolder
 from torchvision import models, transforms 
 
 # Hugging Face datasets 
 #import datasets 
 
 # Transformers libraries 
-from transformers import TrainingArguments, Trainer
+# from transformers import TrainingArguments, Trainer
 from transformers import ViTFeatureExtractor, ViTForImageClassification
 from transformers import get_linear_schedule_with_warmup 
 
@@ -27,8 +27,8 @@ from transformers import get_linear_schedule_with_warmup
 # from sklearn.neighbors import KNeighborsClassifier
 
 # simple models
-from models import LogisticRegression, BasicCNNModel, DenseCNNModel, BasicCNNCountryModel, ViTCountryModel
-from SatelliteImageDataset import SatelliteImageDataset, SatelliteImageMetadataDataset
+from models import LogisticRegression, BasicCNNModel, DenseCNNModel, BasicCNNCountryModel, ViTCountryModel, ViTMosaiksModel
+from SatelliteImageDataset import SatelliteImageDataset, SatelliteImageMetadataDataset, SatelliteImageMosaiksDataset
 
 from sklearn.metrics import confusion_matrix
 
@@ -40,10 +40,11 @@ random.seed(RANDOM_SEED)
 
 
 class ImageClassificationCollator:
-    def __init__(self, feature_extractor, transforms = False, metadata = False): 
+    def __init__(self, feature_extractor, transforms = False, metadata = False, mosaiks = False): 
         self.feature_extractor = feature_extractor
         self.transforms = transforms 
         self.metadata = metadata
+        self.mosaiks = mosaiks
 
     def __call__(self, batch):
         if self.transforms: 
@@ -56,8 +57,9 @@ class ImageClassificationCollator:
         if self.metadata: 
             if "country" in self.metadata:
                 encodings['country'] = torch.tensor([x[2] for x in batch])
-            # if "year" in self.metadata: 
-            #     encodings['year'] = torch.tensor([x[2]['year'] for x in batch])
+        elif self.mosaiks: 
+            encodings['mosaiks_features'] = torch.tensor(np.array([x[2] for x in batch]), dtype = torch.float32)
+
         return encodings
 
 # create model and collator
@@ -71,7 +73,11 @@ def create_model_and_collator(args, model_name, metadata = None, cnt_id_map = No
             model = BasicCNNCountryModel(n_classes=CLASSES, cnt_id_map = cnt_id_map, num_country_embeddings=len(cnt_id_map))
         elif model_name == "ViT":
             model = ViTCountryModel(n_classes=CLASSES, cnt_id_map = cnt_id_map, num_country_embeddings=len(cnt_id_map))
-    
+    elif args.mosaiks: 
+        feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
+        collator = ImageClassificationCollator(feature_extractor, mosaiks=args.mosaiks)
+        collators = (collator, collator)
+        model = ViTMosaiksModel(n_classes=CLASSES, mosaiks_dim = 3999)
     elif model_name == "ViT":
         feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
         collator = ImageClassificationCollator(feature_extractor)
@@ -177,6 +183,14 @@ def create_dataset(args, collator_fns, metadata = None, cnt_id_map = None, val_s
             outcome = args.outcome, 
             loader = npy_loader
         )
+    elif args.mosaiks: 
+        dataset = SatelliteImageMosaiksDataset(
+            root = args.data_dir, 
+            csv_path = args.csv_file, 
+            outcome = args.outcome, 
+            mosaiks_csv_path = args.mosaiks_csv_file, 
+            loader = npy_loader
+        )
     else:
         dataset = SatelliteImageDataset(
             root = args.data_dir, 
@@ -187,8 +201,13 @@ def create_dataset(args, collator_fns, metadata = None, cnt_id_map = None, val_s
 
     # IDEALLY we would like same sampling...
 
-    # split up into train val data  
-    indices = torch.randperm(len(dataset)).tolist()
+    # split up into train val data 
+    if os.path.isfile("indices_perm.npy"):
+        indices = np.load("indices_perm.npy") 
+    else:
+        indices = torch.randperm(len(dataset)).tolist()
+        np.save("indices_perm.npy", indices)
+    
     n_val = int(np.floor(len(indices) * val_split))
     train_ds = torch.utils.data.Subset(dataset, indices[:-n_val])
     val_ds = torch.utils.data.Subset(dataset, indices[-n_val:])
@@ -230,10 +249,10 @@ def validation(args, val_loader, model, criterion, metadata, device, name = 'Val
         with torch.no_grad():
             if metadata: 
                 country = batch['country'].to(device)
-                if args.model_name in ['basic_cnn']:
-                    outputs = model(inputs, country)
-                elif args.model_name == "ViT":
-                    outputs = model(inputs, country)
+                outputs = model(inputs, country)
+            elif args.mosaiks: 
+                mosaiks_features = batch['mosaiks_features'].to(device)
+                outputs = model(inputs, mosaiks_features)
             elif args.model_name in [
             'basic_cnn', 'basic_cnn_novit', 'dense_cnn', 'logistic_regression',
             'resnet', 'alexnet', 'vgg', 'squeezenet', 'densenet'
@@ -288,10 +307,10 @@ def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, metad
             # forward pass 
             if metadata: 
                 country = batch['country'].to(device)
-                if args.model_name in ['basic_cnn']:
-                    outputs = model(inputs, country)
-                elif args.model_name == "ViT":
-                    outputs = model(inputs, country)
+                outputs = model(inputs, country)
+            elif args.mosaiks: 
+                mosaiks_features = batch['mosaiks_features'].to(device)
+                outputs = model(inputs, mosaiks_features)
             elif args.model_name in [
                 'basic_cnn', 'basic_cnn_novit', 'dense_cnn', 'logistic_regression', 
                 'resnet', 'alexnet', 'vgg', 'squeezenet', 'densenet'
@@ -353,6 +372,7 @@ if __name__ == '__main__':
     parser.add_argument('--csv_file', type=str, help='CSV file with labels.')
     parser.add_argument('--outcome', type=str, help='Label of outcome variable in df.')
     parser.add_argument('--n_classes', type=int, help='Number of classes in outcome variable.')	
+    parser.add_argument('--mosaiks_csv_file', type=str, help='CSV file for mosaiks features.')
 
     parser.add_argument('--batch_size', default=16, type=int, help='Batch size.')
     parser.add_argument('--epoch_n', default=10, type=int, help='Number of epochs for training.')
@@ -363,6 +383,7 @@ if __name__ == '__main__':
     parser.add_argument('--filename', default=None, type=str, help='Name of results file to be saved.')
 
     parser.add_argument('--model_name', default=None, type=str, help='Name of model.')
+    parser.add_argument('--mosaiks', action='store_true', help="Whether to include mosaiks features.")
     parser.add_argument('--metadata', action='store_true', help="Whether to include metadata.")
     parser.add_argument('--save_path', default=None, type=str, help='The path where the model is going to be saved.')
 
@@ -381,6 +402,9 @@ if __name__ == '__main__':
 
     # read df 
     df = pd.read_csv(args.csv_file + ".csv")
+
+    if args.metadata and args.mosaiks: 
+        raise NotImplementedError("Functionality for both mosaiks and metadata has not been implemented yet.")
 
     cnt_id_map = None
     metadata = None

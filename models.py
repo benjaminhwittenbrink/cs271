@@ -201,3 +201,32 @@ class ViTCountryModel(nn.Module):
 		logits = self.mlp(concat_output)
 
 		return logits
+
+class ViTMosaiksModel(nn.Module):
+
+	def __init__(self, n_classes, mosaiks_dim = 64, mlp_dim = 128):
+		
+		super().__init__()
+
+		self.n_classes = n_classes
+		# applies pooling layer 
+		configuration = ViTConfig()
+		self.model = ViTModel(configuration).from_pretrained('google/vit-base-patch16-224-in21k')
+		
+		hidden_dim = 768
+		self.mlp = nn.Sequential(
+            nn.Linear(hidden_dim + mosaiks_dim, mlp_dim),
+            nn.ReLU(),
+            nn.Linear(mlp_dim, mlp_dim),
+            nn.ReLU(),            
+            nn.Linear(mlp_dim, self.n_classes)
+        )
+	
+	def forward(self, X, mosaiks_features):
+		device = 'cuda' if torch.cuda.is_available() else 'cpu'
+		model_out = self.model(X)['pooler_output']
+		mosaiks_features = mosaiks_features.to(device)
+		concat_output = torch.cat((model_out, mosaiks_features), dim=1)
+		logits = self.mlp(concat_output)
+
+		return logits
