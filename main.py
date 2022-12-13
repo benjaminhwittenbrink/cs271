@@ -7,6 +7,7 @@ import numpy as np
 import collections 
 from tqdm import tqdm 
 from datetime import datetime
+import pickle 
 
 # PyTorch libraries 
 import torch 
@@ -271,15 +272,16 @@ def validation(args, val_loader, model, criterion, metadata, device, name = 'Val
         total_sample += sample_n 
         total_confusion += c_matrix 
 
+    bal_acc = np.mean( np.diag(total_confusion) / np.sum(total_confusion, 1) )
     print(f'*** Accuracy on the {name} set: {total_correct/total_sample}')
-    print(f'*** Weighted accuracy on the {name} set: {np.mean( np.diag(total_confusion) / np.sum(total_confusion, 1) )}')
+    print(f'*** Weighted accuracy on the {name} set: {bal_acc}')
     print(f'*** Confusion matrix:\n{total_confusion}')
     if write_file:
         write_file.write(f'*** Accuracy on the {name} set: {total_correct/total_sample}\n')
         write_file.write(f'*** Weighted accuracy on the {name} set: {np.mean( np.diag(total_confusion) / np.sum(total_confusion, 1) )}')
         write_file.write(f'*** Confusion matrix:\n{total_confusion}\n')
 
-    return total_loss, float(total_correct / total_sample) * 100
+    return total_loss, float(total_correct / total_sample) * 100, bal_acc
 
 
 
@@ -341,7 +343,7 @@ def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, metad
                     write_file.write(f'*** Loss: {loss}\n')
                     write_file.write(f'*** Running accuracy on the train set: {total_correct/total_sample}\n')
 
-                _, val_acc = validation(args, data_loaders[1], model, criterion, metadata, device, write_file=write_file)
+                _, val_acc_unbal, val_acc = validation(args, data_loaders[1], model, criterion, metadata, device, write_file=write_file)
 
                 model.train()
 
@@ -350,13 +352,16 @@ def train(args, data_loaders, epoch_n, model, optim, scheduler, criterion, metad
 
                     if args.save_path:
                         if args.model_name in ['ViT']:
-                            model.save_pretrained(args.save_path)
+                            if metadata: 
+                                with open(args.save_path + "/" + "ViT_metadata.pkl", "wb") as f: 
+                                    pickle.dump(model, f)
+                            elif args.mosaiks:
+                                with open(args.save_path + "/" + "ViT_mosaiks.pkl", "wb") as f: 
+                                    pickle.dump(model, f)                                 
+                            else: 
+                                model.save_pretrained(args.save_path)
                         else: 
                             torch.save(model.state_dict(), args.save_path)
-
-
-
-
 
 
 if __name__ == '__main__':
