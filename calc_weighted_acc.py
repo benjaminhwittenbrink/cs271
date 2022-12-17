@@ -52,9 +52,8 @@ if __name__ == "__main__":
 
         for results_file in results: 
 
-            if ".txt" in results_file:
 
-                wacc = calc_weighted_accs(folder_path, results_file)
-                print(folder_path)
-                #print(results_file)
-                print(f"Epoch with best weighted acc: {np.argmax(wacc)} with value of {np.max(wacc)}.\n")
+            wacc = calc_weighted_accs(folder_path, results_file)
+            print(folder_path)
+            #print(results_file)
+            print(f"Epoch with best weighted acc: {np.argmax(wacc)} with value of {np.max(wacc)}.\n")

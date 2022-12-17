@@ -41,7 +41,21 @@ if __name__ == "__main__":
         [ 37.  40.  51.  23.  57.]
         [ 25.  21.  43.  41.  88.]
         [  7.  10.  24.  21. 136.]]
+        """, 
+        "vit_under5_mortality_bin_quint":
         """
+        [[111.  29.  33.  18.  26.]
+        [ 88.  38.  28.  21.  40.]
+        [ 59.  35.  44.  16.  59.]
+        [ 34.  31.  37.  23. 106.]
+        [ 19.  10.  23.  21. 135.]]
+        """,
+        "vit_country_under5_mortality_bin":
+        """
+        [[333. 163.  57.]
+        [141. 194.  76.]
+        [ 11.  57.  52.]]
+        """,
     }
     titles = {
         "vit_Mean_BMI_bin": "BMI CDC binning (ViT)",
@@ -64,6 +78,12 @@ if __name__ == "__main__":
         plt.savefig("output/heatmaps/" + cm_key + ".png")
         plt.show()
 
+        denoms = [np.sum(cm[0:i]) + np.sum(cm[i+1:]) for i in range(cm.shape[0])]
+        nums = [np.sum(cm[0:i, i]) + np.sum(cm[i+1:, i]) for i in range(cm.shape[0])]
+        fpr = np.array(nums) / np.array(denoms) 
+
+        print("TNR by class:", np.round(1 - fpr, 2))
+
         cm = cm / cm.sum(1)[:, None]
         fig, ax = plt.subplots(1,1, figsize=(7,6))
         sns.heatmap(np.round(cm,2), annot=True, fmt='g', cmap = "Blues", annot_kws={"size": 20})
@@ -72,3 +92,5 @@ if __name__ == "__main__":
         #plt.title(titles[cm_key])
         plt.savefig("output/heatmaps/" + cm_key + "_rownorm.png")
         plt.show()
+
+        print("TPR by class:", np.diag(np.round(cm, 2)))
