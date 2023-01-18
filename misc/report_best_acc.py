@@ -23,7 +23,7 @@ def get_accs(fold, results_file, verbose = False):
 if __name__ == "__main__":
 
     N_CLASSES = 3
-    FOLDER = "results/results_bmi_quint/"
+    FOLDER = "results/results_infant_quint/"
 
     res_folders = os.listdir(FOLDER)
     res_folders = sorted(res_folders)
